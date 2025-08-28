@@ -48,6 +48,7 @@ from models.common import (
     GhostBottleneck,
     GhostConv,
     Proto,
+    MultiScaleProto,
 )
 from models.experimental import MixConv2d
 from utils.autoanchor import check_anchor_order
@@ -101,7 +102,7 @@ class Detect(nn.Module):
                 if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
                     self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
 
-                if isinstance(self, Segment):  # (boxes + masks)
+                if isinstance(self, Segment) or isinstance(self, MultiScaleSegment):  # (boxes + masks)
                     xy, wh, conf, mask = x[i].split((2, 2, self.nc + 1, self.no - self.nc - 5), 4)
                     xy = (xy.sigmoid() * 2 + self.grid[i]) * self.stride[i]  # xy
                     wh = (wh.sigmoid() * 2) ** 2 * self.anchor_grid[i]  # wh
@@ -130,7 +131,7 @@ class Detect(nn.Module):
 class Segment(Detect):
     """YOLOv5 Segment head for segmentation models, extending Detect with mask and prototype layers."""
 
-    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
+    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True): ##[80, [...], 32,256,[128,256,512]]
         """Initializes YOLOv5 Segment head with options for mask count, protos, and channel adjustments."""
         super().__init__(nc, anchors, ch, inplace)
         self.nm = nm  # number of masks
@@ -146,6 +147,28 @@ class Segment(Detect):
         """
         p = self.proto(x[0])
         x = self.detect(self, x)
+        return (x, p) if self.training else (x[0], p) if self.export else (x[0], p, x[1])
+
+
+class MultiScaleSegment(Detect):
+    """YOLOv5 Segment head for segmentation models, extending Detect with mask and prototype layers."""
+
+    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):  ##[80, [...], 32,[256,128,64],[ch_C1,ch_C2, ch_P3, ch_P4,ch_P5] ]
+        """Initializes YOLOv5 Segment head with options for mask count, protos, and channel adjustments."""
+        super().__init__(nc, anchors, ch[-3:], inplace)
+        self.nm = nm  # number of masks
+        self.npr = npr  # number of protos
+        self.no = 5 + nc + self.nm  # number of outputs per anchor
+        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch[-3:])  # output conv
+        self.proto = MultiScaleProto(ch[:-2][::-1], self.npr, self.nm)  # protos ## c1=[ch_P3, ch_C2, ch_C1]
+        self.detect = Detect.forward
+
+    def forward(self, x): # [C1,C2,P3,P4,P5]
+        """Processes input through the network, returning detections and prototypes; adjusts output based on
+        training/export mode.
+        """
+        p = self.proto(x[:-2][::-1])  ## [P3,C2,C1]
+        x = self.detect(self, x[-3:])
         return (x, p) if self.training else (x[0], p) if self.export else (x[0], p, x[1])
 
 
@@ -244,11 +267,11 @@ class DetectionModel(BaseModel):
 
         # Build strides, anchors
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, Segment)):
+        if isinstance(m, (Detect, Segment, MultiScaleSegment)):
 
             def _forward(x):
                 """Passes the input 'x' through the model and returns the processed output."""
-                return self.forward(x)[0] if isinstance(m, Segment) else self.forward(x)
+                return self.forward(x)[0] if isinstance(m, Segment) or isinstance(m, MultiScaleSegment) else self.forward(x)
 
             s = 256  # 2x min stride
             m.inplace = self.inplace
@@ -434,11 +457,13 @@ def parse_model(d, ch):
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
         # TODO: channel, gw, gd
-        elif m in {Detect, Segment}:
+        elif m in {Detect, Segment, MultiScaleSegment}:
             args.append([ch[x] for x in f])
             if isinstance(args[1], int):  # number of anchors
                 args[1] = [list(range(args[1] * 2))] * len(f)
             if m is Segment:
+                args[3] = make_divisible(args[3] * gw, ch_mul)
+            if m is MultiScaleSegment:
                 args[3] = make_divisible(args[3] * gw, ch_mul)
         elif m is Contract:
             c2 = ch[f] * args[0] ** 2
@@ -462,11 +487,15 @@ def parse_model(d, ch):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cfg", type=str, default="yolov5s.yaml", help="model.yaml")
+    parser.add_argument("--cfg", type=str, default=r"D:\desktop\projects\myfork\yolov5\models\segment\yolov5n-msseg.yaml",
+                        help="model.yaml")
+    # parser.add_argument("--cfg", type=str,
+    #                     default=r"D:\desktop\projects\myfork\yolov5\models\segment\yolov5n-seg.yaml",
+    #                     help="model.yaml")
     parser.add_argument("--batch-size", type=int, default=1, help="total batch size for all GPUs")
-    parser.add_argument("--device", default="", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
-    parser.add_argument("--profile", action="store_true", help="profile model speed")
-    parser.add_argument("--line-profile", action="store_true", help="profile model speed layer by layer")
+    parser.add_argument("--device", default="cpu", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
+    parser.add_argument("--profile", action="store_true",default=True, help="profile model speed")
+    parser.add_argument("--line-profile", action="store_true",default=True, help="profile model speed layer by layer")
     parser.add_argument("--test", action="store_true", help="test all yolo*.yaml")
     opt = parser.parse_args()
     opt.cfg = check_yaml(opt.cfg)  # check YAML

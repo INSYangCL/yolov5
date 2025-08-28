@@ -1100,6 +1100,37 @@ class Proto(nn.Module):
         return self.cv3(self.cv2(self.upsample(self.cv1(x))))
 
 
+class MultiScaleProto(nn.Module):
+    """YOLOv5 mask Proto module for segmentation models, performing convolutions and upsampling on input tensors."""
+
+    def __init__(self, c1=[256,128,64], c_=256, c2=32):  ## c1=[ch_P3, ch_C2, ch_C1]
+        """Initializes YOLOv5 Proto module for segmentation with input, proto, and mask channels configuration."""
+        super().__init__()
+        self.layers = nn.ModuleList()
+        c_t = 0
+        for idx in range(len(c1)):
+            if idx == (len(c1)-1):
+                c_out = c1[idx]
+            else:
+                c_out = c1[idx+1]
+            self.layers.append(nn.Sequential(Conv(c1[idx]+c_t, c_out, k=3),
+                                        nn.Upsample(scale_factor=2, mode="nearest")))
+            c_t = c_out
+
+        self.cv1 = Conv(c1[-1], c_, k=3)
+        # self.upsample = nn.Upsample(scale_factor=2, mode="nearest")
+        # self.cv2 = Conv(c_, c_, k=3)
+        self.cv2 = Conv(c_, c2, k=1)
+
+    def forward(self, x): ## [P3 C2 C1]
+        """Performs a forward pass using convolutional layers and upsampling on input tensor `x`."""
+        x1 = self.layers[0](x[0])
+        for x_in, m in zip(x[1:], self.layers[1:]):
+            x1 = m(torch.cat([x1, x_in], dim=1))
+        # return self.cv2(x1)
+        return self.cv2(self.cv1(x1))
+
+
 class Classify(nn.Module):
     """YOLOv5 classification head with convolution, pooling, and dropout layers for channel transformation."""
 
