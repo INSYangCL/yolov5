@@ -33,6 +33,8 @@ import torch.nn as nn
 import yaml
 from torch.optim import lr_scheduler
 from tqdm import tqdm
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]  # YOLOv5 root directory
@@ -275,7 +277,7 @@ def train(hyp, opt, device, callbacks):
         val_loader = create_dataloader(
             val_path,
             imgsz,
-            batch_size // WORLD_SIZE * 2,
+            batch_size // WORLD_SIZE,
             gs,
             single_cls,
             hyp=hyp,
@@ -334,6 +336,7 @@ def train(hyp, opt, device, callbacks):
     )
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         # callbacks.run('on_train_epoch_start')
+        torch.cuda.empty_cache()
         model.train()
 
         # Update image weights (optional, single-GPU only)
@@ -437,7 +440,7 @@ def train(hyp, opt, device, callbacks):
             if not noval or final_epoch:  # Calculate mAP
                 results, maps, _ = validate.run(
                     data_dict,
-                    batch_size=batch_size // WORLD_SIZE * 2,
+                    batch_size=batch_size // WORLD_SIZE,
                     imgsz=imgsz,
                     half=amp,
                     model=ema.ema,
@@ -506,7 +509,7 @@ def train(hyp, opt, device, callbacks):
                     LOGGER.info(f"\nValidating {f}...")
                     results, _, _ = validate.run(
                         data_dict,
-                        batch_size=batch_size // WORLD_SIZE * 2,
+                        batch_size=batch_size // WORLD_SIZE,
                         imgsz=imgsz,
                         model=attempt_load(f, device).half(),
                         iou_thres=0.65 if is_coco else 0.60,  # best pycocotools at iou 0.65
